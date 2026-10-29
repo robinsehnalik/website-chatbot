@@ -1,0 +1,140 @@
+{
+  "name": "BOT-ERR Error Handler",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "4ba6444a-89d3-4665-905e-1ec26a5daaab",
+      "name": "Chatbot Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const err = $json.execution?.error || {};\nconst workflow = $json.workflow || {};\n\nreturn [{\n  json: {\n    workflowName: workflow.name,\n    nodeName: err.node?.name || 'Unknown Node',\n    message: err.message || 'Unknown runtime error',\n    executionId: $json.execution?.id,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "621e4f31-c420-4f19-b2b9-aef3fdef37b0",
+      "name": "Format Error Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LINK_TO_YOUR_SUPABASE_URL }}/rest/v1/workflow_log",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  workflow_name: $json.workflowName,\n  node_name: $json.nodeName,\n  error_message: $json.message,\n  execution_id: $json.executionId\n}) }}"
+      },
+      "id": "9f0d530e-fecb-4e02-a00d-197994a8c421",
+      "name": "Log Error to Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.RESEND_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  from: $env.SYSTEM_SENDER_EMAIL || \"alerts@yourdomain.com\",\n  to: [$env.OWNER_NOTIFICATION_EMAIL],\n  subject: \"[ALERT] Chatbot Workflow Error: \" + $json.workflowName,\n  html: `<p>A chatbot workflow failed:</p>\n<ul>\n  <li>Workflow: ${$json.workflowName}</li>\n  <li>Node: ${$json.nodeName}</li>\n  <li>Error: ${$json.message}</li>\n</ul>`\n}) }}"
+      },
+      "id": "f9db929f-7aa0-4b5f-b965-a846e236f827",
+      "name": "Alert Admin via Resend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        820,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Chatbot Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Format Error Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Error Record": {
+      "main": [
+        [
+          {
+            "node": "Log Error to Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Error to Supabase": {
+      "main": [
+        [
+          {
+            "node": "Alert Admin via Resend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "58b4dfe1-e78a-4ea0-a573-b02a99ea7abc",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "automation-suite"
+  },
+  "id": "f2ffb22b",
+  "tags": []
+}

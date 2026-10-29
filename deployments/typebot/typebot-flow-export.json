@@ -1,0 +1,29 @@
+{
+  "version": "6",
+  "name": "Website Assistant & Support Handoff",
+  "nodes": [
+    {
+      "id": "welcome",
+      "type": "bubble",
+      "content": "Hello! How can I assist you today?"
+    },
+    {
+      "id": "user_input",
+      "type": "text_input",
+      "variable": "userQuery"
+    },
+    {
+      "id": "handoff_webhook",
+      "type": "webhook",
+      "url": "https://n8n.yourdomain.com/webhook/chat/handoff",
+      "method": "POST",
+      "body": {
+        "sessionId": "{{sessionId}}",
+        "contactEmail": "{{contactEmail}}",
+        "contactName": "{{contactName}}",
+        "reason": "Escalated to human support",
+        "source": "typebot"
+      }
+    }
+  ]
+}
