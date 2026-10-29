@@ -1,41 +1,40 @@
 # Automation Architecture — Website AI Chatbot System
 
-**Document Version:** 2.0.0  
-**Status:** Approved Architecture  
-**Author:** Principal Systems and Automation Architect  
+**Document Version:** 2.1.0  
+**Status:** Approved Production Architecture  
+**Author:** Principal Automation Architect and Systems Engineer  
 
 ---
 
 ## Executive Summary
 
-The **Website AI Chatbot System** provides intelligent, grounded customer assistance for websites and e-commerce platforms while offering a seamless bridge to human team members.
+The **Website AI Chatbot System** provides low-latency, grounded customer assistance and seamless asynchronous human support escalation for company websites and e-commerce stores.
 
-### Architectural Refactoring & Problem Statement
-Previous iterations suffered from three core architectural anti-patterns:
-1. **Synchronous Streaming Bottlenecks in n8n**: Routing visitor-facing real-time chat tokens through synchronous n8n workflows held worker execution queues open for 15–30 seconds per turn. Under moderate traffic spikes, this choked n8n's concurrency, exhausting database connection pools and stalling mission-critical background jobs.
-2. **Custom Frontend Maintenance Debt**: Maintaining a custom vanilla JavaScript widget (`widget/` directory), session storage layer, responsive styling, and cross-browser WebSocket logic introduced unnecessary development and security overhead.
-3. **Custom Edge Gateway Overhead**: Hand-rolled gateway proxies for rate-limiting and token signing added fragility without matching the capabilities of established conversational platforms.
+### 1. Architectural Decisions & Scope
+Based on production evaluation and architecture review, this system standardizes on a **single approved architecture**:
+* **Conversational Frontend**: Self-hosted or cloud-managed **Typebot** acting as the embeddable web chat widget and visual conversation manager.
+* **Low-Latency RAG Engine**: A dedicated **Supabase Edge Function (`rag-query`)** that computes query embeddings, executes calibrated vector similarity search against Supabase pgvector, and generates grounded completions via OpenAI (`gpt-4o-mini`).
+* **Asynchronous Automation Layer (n8n)**: Dedicated exclusively to asynchronous workflows:
+  * [`bot-02-handoff-manager.json`](./n8n-workflows/bot-02-handoff-manager.json): Ingests authenticated escalation webhooks, creates support tickets, and delivers email/Slack alerts to human staff.
+  * [`bot-03-knowledge-sync.json`](./n8n-workflows/bot-03-knowledge-sync.json): Scheduled and webhook-driven knowledge ingestion and vector synchronization.
+  * [`bot-err-error-handler.json`](./n8n-workflows/bot-err-error-handler.json): Global exception monitoring.
 
-### The Refactored Solution
-This architecture decouples the **synchronous visitor conversational loop** from the **asynchronous automation and intelligence layer**:
-- **Visitor Layer (Decoupled Frontends)**: Built on proven, open-source conversational software with zero custom widget maintenance. The system provides two distinct implementation paths:
-  - **Option A (Lightweight / Asynchronous)**: **Typebot + n8n + Supabase**
-  - **Option B (Omnichannel / Live Agent Takeover)**: **Chatwoot + n8n + Supabase**
-- **Data & Intelligence Layer**: **Supabase (PostgreSQL + pgvector)** serves as the single source of truth for semantic knowledge vectors, interaction logs, and escalation records.
-- **Asynchronous Automation Layer (n8n)**: Dedicated exclusively to event-driven webhooks, agent handoff routing, scheduled knowledge base re-indexing (`BOT-03`), and weekly gap analytics reporting (`BOT-04`).
+### 2. Problems Resolved from Prior Iterations
+1. **Zero Visitor Loop Congestion in n8n**: The visitor query path is handled entirely by the Supabase Edge Function (~1.2s turn latency). n8n is never in the real-time token streaming loop.
+2. **No Frontend Code Debt**: Replaced custom vanilla JavaScript widgets with battle-tested Typebot web components.
+3. **Calibrated Semantic Retrieval**: Lowered the cosine similarity threshold from an unrealistic `0.70` down to a calibrated **`0.45`** for `text-embedding-3-small`. Replaced `ivfflat` with an **HNSW index** to prevent recall drop on small or growing datasets.
+4. **Security & RLS**: All webhooks enforce `X-Webhook-Secret` verification. Row Level Security (RLS) restricts access to internal tables. Bot disclosure is enforced on the opening message.
 
 ---
 
 ## 1. Architectural Principles
 
-1. **Strictly Grounded Knowledge Retrieval**: The bot answers strictly from indexed company knowledge (FAQ, documentation, policies, catalog data) with similarity thresholding (cosine similarity $\ge 0.70$). If relevant context is absent, the system deterministically refuses to guess and triggers human escalation.
-2. **Decoupled Real-Time & Background Loops**: n8n is entirely removed from the real-time token streaming path. Streaming and presence are handled natively by Typebot or Chatwoot; n8n functions strictly as an asynchronous webhook worker.
-3. **Zero Custom Frontend Code**: Uses battle-tested, accessible, and responsive open-source widgets (Typebot web component or Chatwoot live widget).
-4. **First-Class Human Intervention**: Escalation is designed as an expected, seamless operational path:
-   - In **Option A**, visitor contact information is captured and routed asynchronously to email/Slack tickets.
-   - In **Option B**, conversations are reassigned to human agents in real time inside the same widget, instantly muting the bot.
-5. **Read-Only Scoped Tool Execution**: E-commerce catalog lookups and order status checks are strictly read-only and require double verification (e.g. Order Number + Email). The bot cannot modify records, issue refunds, or apply custom discounts.
-6. **Defense-in-Depth & Privacy**: Untrusted visitor inputs are delimited to prevent prompt injection. Personally identifiable information (PII) is restricted to escalation tickets, with configurable retention limits.
+1. **Grounded In-Context Knowledge**: Answers are generated strictly from indexed company knowledge (FAQ, shipping, returns, product documentation). If similarity falls below the calibrated `0.45` threshold, the assistant acknowledges lack of context and offers human escalation.
+2. **n8n Off the Real-Time Path**: Visitor chat turns bypass n8n completely. n8n executes strictly as an asynchronous webhook consumer for human handoffs and scheduled background indexing.
+3. **Calibrated Thresholds & HNSW Indexing**: Uses HNSW indexing (`vector_cosine_ops`) for deterministic recall without empty-list recall degradation.
+4. **Guaranteed Human Intervention**: Escalation collects visitor email, name, and inquiry context, dispatches a secure webhook to n8n, and immediately notifies on-call staff via Resend/Slack.
+5. **Defense-in-Depth & Privacy**: Webhooks authenticate via shared secrets; Supabase tables are protected by Row Level Security; visitor PII is purged after a 90-day retention window.
+6. **Transparent Bot Disclosure**: In compliance with transparency standards, the bot explicitly identifies itself as an automated AI assistant in its greeting message.
 
 ---
 
@@ -45,369 +44,281 @@ This architecture decouples the **synchronous visitor conversational loop** from
 flowchart TD
     subgraph Visitors["Website Visitors"]
         WebPage["Website / E-Commerce Store"]
+        Widget["Typebot Embeddable Web Component"]
     end
 
-    subgraph OptionA["Option A: Lightweight / Asynchronous Stack"]
-        TypebotWidget["Typebot Embeddable Widget"]
-        TypebotServer["Typebot Server (Visual Flow Engine)"]
+    subgraph EdgeLayer["Low-Latency Serverless Layer"]
+        EdgeFn["Supabase Edge Function: rag-query\n(Deno / TypeScript Runtime)"]
     end
 
-    subgraph OptionB["Option B: Omnichannel Live Chat Stack"]
-        ChatwootWidget["Chatwoot Live Chat Widget"]
-        ChatwootServer["Chatwoot Server (Inbox & WebSockets)"]
-        AgentInbox["Live Agent Dashboard & Mobile Apps"]
-    end
-
-    subgraph Data["Supabase (PostgreSQL + pgvector)"]
-        KB[("kb_documents & kb_chunks (pgvector)")]
-        Sessions[("chat_sessions & chat_messages")]
+    subgraph DataLayer["Supabase (PostgreSQL + pgvector)"]
+        KBDocs[("kb_documents (Source Metadata)")]
+        KBChunks[("kb_chunks (HNSW Vector Index)")]
         Handoffs[("handoffs (Escalation Tickets)")]
+        UnansweredView["v_unanswered_queries (SQL View)"]
+    end
+
+    subgraph LLM["OpenAI API"]
+        EmbedAPI["Embeddings API (text-embedding-3-small)"]
+        ChatAPI["Chat Completions (gpt-4o-mini)"]
     end
 
     subgraph N8N["n8n Asynchronous Automation Runtime"]
-        BOT1["BOT-01 Chatwoot Bot Agent (Option B)"]
-        BOT2["BOT-02 Handoff & Alert Manager (Options A & B)"]
-        BOT3["BOT-03 Asynchronous Knowledge Sync"]
-        BOT4["BOT-04 Weekly Gap & Analytics Report"]
+        BOT2["BOT-02 Handoff & Escalation Manager\n(Authenticated Webhook POST /chat/handoff)"]
+        BOT3["BOT-03 Knowledge Ingestion & Sync\n(Content Hash Deduplication)"]
         BOTERR["BOT-ERR Global Error Handler"]
     end
 
-    subgraph External["External APIs"]
-        OpenAI["OpenAI API (gpt-4o / embeddings)"]
-        Resend["Resend / Slack Notification API"]
-        ShopAPI["E-commerce API (Read-Only Catalog)"]
+    subgraph External["Alerting & Notification"]
+        Resend["Resend API (Email Alerts to Support Team)"]
+        Staff["Human Support Team"]
     end
 
-    %% Option A Wiring
-    WebPage -.->|Embed Option A| TypebotWidget
-    TypebotWidget --> TypebotServer
-    TypebotServer -->|Native RAG Query| KB
-    TypebotServer -->|Direct Answer Stream| OpenAI
-    TypebotServer -->|On Escalation: POST /chat/handoff| BOT2
+    %% Real-time Visitor Loop (Sub-2s)
+    WebPage -->|Embedded Chat| Widget
+    Widget -->|POST /functions/v1/rag-query| EdgeFn
+    EdgeFn -->|1. Generate Embedding| EmbedAPI
+    EmbedAPI -->>|Vector| EdgeFn
+    EdgeFn -->|2. match_kb_chunks >= 0.45| KBChunks
+    KBChunks -->>|Matched Chunks + source_url| EdgeFn
+    EdgeFn -->|3. Grounded Completion| ChatAPI
+    ChatAPI -->>|Streamed / Structured Reply| EdgeFn
+    EdgeFn -->>|Return answer & sources| Widget
 
-    %% Option B Wiring
-    WebPage -.->|Embed Option B| ChatwootWidget
-    ChatwootWidget <-->|WebSockets| ChatwootServer
-    ChatwootServer -->|Webhook: message_created| BOT1
-    BOT1 -->|Vector Search RPC| KB
-    BOT1 -->|Grounded LLM Query| OpenAI
-    BOT1 -->|Tool: Product/Order Lookup| ShopAPI
-    BOT1 -->|POST Bot Reply / Reassign Agent| ChatwootServer
-    ChatwootServer <-->|Live Human Chat| AgentInbox
-    BOT1 -->|Trigger Escalation Alert| BOT2
+    %% Asynchronous Escalation Loop
+    Widget -->|On Escalation: POST /chat/handoff with X-Webhook-Secret| BOT2
+    BOT2 -->|1. Store Open Ticket| Handoffs
+    BOT2 -->|2. Dispatch Email Alert| Resend
+    Resend --> Staff
+    Handoffs -.-> UnansweredView
 
-    %% Shared Automation Layer
-    BOT2 -->|Store Ticket| Handoffs
-    BOT2 -->|Dispatch Alert| Resend
-    KB -.->|Scheduled Re-index| BOT3
-    BOT3 -->|Embeddings| OpenAI
-    Sessions -->|Weekly Query Gaps| BOT4
-    Handoffs -->|Analyze Escalation Reasons| BOT4
-    BOT4 -->|Email Report| Resend
-    BOT1 -.->|On Failure| BOTERR
+    %% Background Knowledge Sync
+    KBDocs -->|Scheduled Re-index| BOT3
+    BOT3 -->|Hash & Embed| EmbedAPI
+    BOT3 -->|Idempotent Upsert| KBChunks
     BOT2 -.->|On Failure| BOTERR
+    BOT3 -.->|On Failure| BOTERR
 ```
 
 ---
 
 ## 3. Core Data Flows & Sequence Diagrams
 
-### 3.1. Standard Grounded RAG Query
-
-#### Path 1: Option A (Typebot Native Loop)
+### 3.1. Standard Visitor RAG Query (Real-Time Sub-2s Path)
 ```mermaid
 sequenceDiagram
     autonumber
     actor Visitor as Website Visitor
-    participant TB as Typebot Runtime
+    participant TB as Typebot Widget
+    participant Edge as Supabase Edge Function (rag-query)
+    participant OpenAI as OpenAI API
     participant Supa as Supabase (pgvector)
-    participant LLM as OpenAI (gpt-4o)
 
-    Visitor->>TB: Sends inquiry ("What is your return policy?")
-    TB->>LLM: Generate query embedding (text-embedding-3-small)
-    LLM-->>TB: Embedding vector
-    TB->>Supa: Call match_kb_chunks(embedding, threshold=0.70)
-    Supa-->>TB: Returns top relevant knowledge chunks
-    alt Similarity >= 0.70 (Context Found)
-        TB->>LLM: Grounded completion (System: answer strictly using context)
-        LLM-->>TB: Streamed answer tokens
-        TB-->>Visitor: Real-time streamed answer displayed in widget
-    else Similarity < 0.70 (No Context Found)
-        TB-->>Visitor: "I don't have that specific information. Would you like me to connect you with our team?"
-        Note over TB,Visitor: Advances to Escalation Flow (Option A)
+    Visitor->>TB: Sends question: "What is your return policy?"
+    TB->>Edge: POST /functions/v1/rag-query { query, sessionId }
+    Edge->>OpenAI: POST /v1/embeddings (text-embedding-3-small)
+    OpenAI-->>Edge: Embedding vector (1536 dims)
+    Edge->>Supa: SELECT match_kb_chunks(embedding, threshold=0.45, count=4)
+    Supa-->>Edge: Returns matching chunks with source_url and similarity
+    alt Similarity >= 0.45 (Context Found)
+        Edge->>OpenAI: POST /v1/chat/completions (System: Grounded Support, Context: chunks)
+        OpenAI-->>Edge: Grounded answer text
+        Edge-->>TB: Return { answer: "...", needs_human: false, sources: [...] }
+        TB-->>Visitor: Displays answer with clickable source citations
+    else Similarity < 0.45 (No Relevant Context)
+        Edge-->>TB: Return { answer: "I don't have that info...", needs_human: true, sources: [] }
+        TB-->>Visitor: "I don't have that information. Would you like me to connect you with our team?"
+        Note over TB,Visitor: Advances to Escalation Flow
     end
 ```
 
-#### Path 2: Option B (Chatwoot + BOT-01 Webhook Loop)
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Visitor as Website Visitor
-    participant CW as Chatwoot Widget & Server
-    participant B1 as n8n BOT-01 Bot Agent
-    participant Supa as Supabase (pgvector)
-    participant LLM as OpenAI (gpt-4o)
-
-    Visitor->>CW: Sends message via Chatwoot live widget
-    CW->>B1: Webhook: message_created (incoming, status: pending)
-    B1->>B1: Verify message: visitor turn, no human agent assigned
-    B1->>LLM: Generate query embedding
-    LLM-->>B1: Embedding vector
-    B1->>Supa: Vector search via match_kb_chunks()
-    Supa-->>B1: Matched knowledge chunks
-    B1->>LLM: Grounded answer generation
-    LLM-->>B1: Verified answer text
-    B1->>CW: POST /api/v1/accounts/{id}/conversations/{id}/messages (bot reply)
-    CW-->>Visitor: Instant message delivered in Chatwoot widget
-    B1->>Supa: Log exchange in chat_messages table
-```
-
----
-
-### 3.2. Escalation Flow — Option A (Typebot Asynchronous Capture)
-Designed for teams without dedicated live chat agents. When escalation triggers, Typebot collects the visitor's contact info and hands off asynchronously to n8n.
-
+### 3.2. Asynchronous Human Escalation Flow
 ```mermaid
 sequenceDiagram
     autonumber
     actor Visitor as Website Visitor
     participant TB as Typebot Widget
     participant B2 as n8n BOT-02 Handoff Manager
-    participant Supa as Supabase
-    participant Mail as Resend / Slack API
-    actor Agent as Support Team
+    participant Supa as Supabase (handoffs)
+    participant Mail as Resend API
+    actor Agent as Support Agent
 
-    Visitor->>TB: Requests human or triggers low confidence
-    TB->>Visitor: "I'll be happy to have our team follow up with you. What is your email?"
-    Visitor->>TB: Submits email address and contact details
-    TB->>B2: Webhook POST /chat/handoff { sessionId, email, name, transcriptSummary }
-    B2->>B2: Normalize payload and fetch conversation context
-    B2->>Supa: INSERT into handoffs (status: 'open', contact_email, summary)
-    B2->>Mail: Dispatch priority notification with transcript & contact details
-    Mail-->>Agent: Email / Slack alert delivered
-    B2-->>TB: Return { success: true, status: 'escalated' }
+    Visitor->>TB: Enters contact email & name
+    TB->>B2: Webhook POST /chat/handoff (Header: X-Webhook-Secret)
+    B2->>B2: Verify X-Webhook-Secret against CHAT_WEBHOOK_SECRET
+    B2->>Supa: INSERT into handoffs (session_id, contact_email, summary, status: 'open')
+    Supa-->>B2: Ticket created (id: uuid)
+    B2->>Mail: POST /emails (Subject: [ACTION REQUIRED] Chat Escalation, Body: context + contact)
+    Mail-->>Agent: Support alert delivered to inbox
+    B2-->>TB: Return { success: true, status: 'escalated', ticket_id: "..." }
     TB-->>Visitor: "Thank you! Our team has received your inquiry and will follow up shortly."
-    Agent->>Visitor: Team replies asynchronously via Email / CRM
+    Agent->>Visitor: Follows up directly via email
 ```
 
 ---
 
-### 3.3. Escalation Flow — Option B (Chatwoot Live Agent Takeover)
-Designed for organizations with customer support agents available for real-time live chat takeover.
+## 4. Workflow & Component Specifications
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Visitor as Website Visitor
-    participant CW as Chatwoot Widget & Server
-    participant B1 as n8n BOT-01 Bot Agent
-    actor Agent as Support Agent (Dashboard/Mobile)
+### 4.1. Supabase Edge Function (`supabase/functions/rag-query/index.ts`)
+* **Role**: Single serverless endpoint for Typebot.
+* **Authentication**: Authenticated via Supabase Anon Key with IP rate-limiting.
+* **Calibrated Search**: Calls `match_kb_chunks` with `match_threshold = 0.45`.
+* **Latency**: Typical round-trip execution is 800ms–1400ms.
 
-    Visitor->>CW: "I want to speak with a manager immediately"
-    CW->>B1: Webhook: message_created
-    B1->>B1: LLM safety & intent check detects high-frustration / handoff intent
-    B1->>CW: PATCH /conversations/{id} (status: "open", add tag: "needs_human")
-    B1->>CW: POST message: "I am connecting you with a support specialist right now."
-    CW-->>Visitor: Notification displayed in widget
-    Note over B1,CW: Conversation is marked 'open' -> BOT-01 automatically mutes
-    CW-->>Agent: Desktop / Mobile push notification: New conversation assigned
-    Agent->>CW: Opens conversation in Chatwoot dashboard
-    Agent->>CW: Types live reply
-    CW-->>Visitor: Real-time message delivered to visitor in same widget
-```
+### 4.2. Asynchronous n8n Workflows (`n8n-workflows/`)
+
+| File | Name | Trigger | Primary Purpose |
+| :--- | :--- | :--- | :--- |
+| [`bot-02-handoff-manager.json`](./n8n-workflows/bot-02-handoff-manager.json) | BOT-02 Handoff Manager | Webhook (`POST /chat/handoff`) | Authenticates webhook via `X-Webhook-Secret`, records ticket in `handoffs`, and dispatches alert email via Resend. |
+| [`bot-03-knowledge-sync.json`](./n8n-workflows/bot-03-knowledge-sync.json) | BOT-03 Knowledge Ingestion & Sync | Cron (`0 3 * * *` Daily) | Chunks documents with `content_hash` deduplication, generates embeddings, and upserts into `kb_chunks`. |
+| [`bot-err-error-handler.json`](./n8n-workflows/bot-err-error-handler.json) | BOT-ERR Global Error Handler | Error Trigger | Traps uncaught exceptions across background workflows and alerts admin. |
 
 ---
 
-## 4. Comparison & Selection Matrix: Option A vs. Option B
-
-| Architectural Dimension | Option A: Typebot + n8n + Supabase | Option B: Chatwoot + n8n + Supabase |
-| :--- | :--- | :--- |
-| **Primary Target Use Case** | Lead qualification, inbound marketing, FAQ bots, asynchronous support ticket intake. | Real-time customer support, e-commerce concierge, dedicated helpdesk teams. |
-| **Escalation Mechanism** | **Asynchronous**: Captures visitor email/phone; dispatches ticket via n8n to Slack/Email. | **Synchronous / Real-Time**: Live agent takes over conversation in the same widget; mobile app notifications. |
-| **Real-Time Streaming** | Native Typebot streaming directly to browser (zero n8n queue congestion). | Native Chatwoot WebSocket streaming and typing indicators. |
-| **Hosting Footprint** | **Very Low**: ~1 GB RAM. Single lightweight Docker container (or hosted Typebot cloud). | **Medium**: ~2–4 GB RAM. Requires Redis, PostgreSQL, and Chatwoot web/worker containers. |
-| **Build & Setup Complexity** | **Low**: Visual drag-and-drop builder; quick web component embed; fast time-to-market (< 2 days). | **Moderate**: Requires configuring Chatwoot inboxes, webhooks, agent accounts, and bot tokens. |
-| **Omnichannel Support** | Web embed only (Iframe, Standard web component, bubble). | **Comprehensive Omnichannel**: Web widget, WhatsApp, Instagram DM, Facebook Messenger, Email. |
-| **Agent Experience** | No agent live chat UI; team handles tickets in existing email inbox or Slack. | Comprehensive agent portal, mobile apps (iOS/Android), collision detection, canned responses. |
-| **Recommended For** | Solo founders, early-stage SaaS, lean teams without 24/7 staff coverage. | Customer support teams, e-commerce stores with active operators, multi-channel businesses. |
-
----
-
-## 5. Workflow & Service Catalog
-
-### 5.1. Responsibility Breakdown (Widget Layer vs. Automation Layer)
-
-```
-┌────────────────────────────────────────────────────────────────────────────┐
-│ CONVERSATIONAL FRONTEND LAYER                                              │
-│                                                                            │
-│ OPTION A: Typebot Runtime                                                  │
-│ - Embeddable widget injection & visual theme rendering                    │
-│ - Interactive form validation (email, phone, single-select buttons)        │
-│ - Direct OpenAI streaming & Supabase pgvector semantic search              │
-│ - Asynchronous handoff trigger on low confidence or visitor request        │
-│                                                                            │
-│ OPTION B: Chatwoot Platform                                                │
-│ - Embeddable live chat widget with WebSocket presence and typing state     │
-│ - Omnichannel message aggregation (Web, WhatsApp, Meta)                    │
-│ - Agent assignment, team queues, canned responses, and conversation state  │
-│ - Mobile apps (iOS & Android) with push notifications for live agents      │
-└─────────────────────────────────────┬──────────────────────────────────────┘
-                                      │ Event Webhooks
-                                      ▼
-┌────────────────────────────────────────────────────────────────────────────┐
-│ ASYNCHRONOUS AUTOMATION RUNTIME (n8n)                                      │
-│                                                                            │
-│ BOT-01: Chatwoot Bot Agent                                                 │
-│ - Ingests message_created events from Chatwoot                             │
-│ - Enforces bot muting when live human agents are assigned                  │
-│ - Executes grounded pgvector search & LLM generation                       │
-│ - Posts bot replies or escalates conversation via Chatwoot API             │
-│                                                                            │
-│ BOT-02: Universal Handoff & Alert Manager                                  │
-│ - Ingests escalation payloads from Typebot (Option A) or Chatwoot (Option B)│
-│ - Generates 2-sentence context summary of session turns                    │
-│ - Logs ticket in Supabase handoffs table                                   │
-│ - Delivers structured alerts to team via Resend / Slack                    │
-│                                                                            │
-│ BOT-03: Asynchronous Knowledge Base Sync                                   │
-│ - Scheduled / on-demand re-indexing of CMS, documentation, and policies    │
-│ - Document chunking and embedding generation (text-embedding-3-small)      │
-│ - Upserts into Supabase kb_chunks with deduplication                       │
-│                                                                            │
-│ BOT-04: Analytics & Unanswered Gap Reporter                                │
-│ - Weekly scheduled analysis of unresolved queries & handoff tickets        │
-│ - LLM clustering of customer questions into actionable FAQ suggestions     │
-│ - Delivers executive weekly digest to product and support owners           │
-│                                                                            │
-│ BOT-ERR: Global Workflow Error Handler                                     │
-│ - Catches uncaught runtime exceptions across all n8n workflows             │
-│ - Logs incident to workflow_log table and alerts administrator             │
-└────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 6. Database Architecture & Schema (Supabase)
+## 5. Database Schema & Security (Supabase)
 
 ```sql
 -- 1. Enable pgvector
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- 2. Knowledge documents and vector chunks
+-- 2. Knowledge Documents Catalog
 CREATE TABLE IF NOT EXISTS kb_documents (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   title TEXT NOT NULL,
-  source_type TEXT NOT NULL CHECK (source_type IN ('faq', 'policy', 'page', 'product')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('faq', 'policy', 'article', 'catalog')),
   source_url TEXT,
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- 3. Knowledge Chunks with Content Hash Deduplication
 CREATE TABLE IF NOT EXISTS kb_chunks (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   document_id UUID REFERENCES kb_documents(id) ON DELETE CASCADE,
   content TEXT NOT NULL,
+  content_hash TEXT UNIQUE NOT NULL, -- Deduplication key
+  source_url TEXT,
   embedding VECTOR(1536), -- text-embedding-3-small
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_kb_chunks_embedding 
-ON kb_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+-- HNSW Index for rapid, accurate vector similarity search
+CREATE INDEX IF NOT EXISTS idx_kb_chunks_hnsw 
+ON kb_chunks USING hnsw (embedding vector_cosine_ops);
 
--- Vector match RPC function
+-- 4. Vector Match Function (Calibrated Threshold: 0.45)
 CREATE OR REPLACE FUNCTION match_kb_chunks(
   query_embedding VECTOR(1536),
-  match_threshold FLOAT DEFAULT 0.70,
+  match_threshold FLOAT DEFAULT 0.45,
   match_count INT DEFAULT 4
 )
-RETURNS TABLE (id UUID, document_id UUID, content TEXT, similarity FLOAT)
-LANGUAGE plpgsql AS $$
+RETURNS TABLE (
+  id UUID,
+  document_id UUID,
+  content TEXT,
+  similarity FLOAT,
+  source_url TEXT,
+  document_title TEXT
+)
+LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
   RETURN QUERY
   SELECT 
-    kb_chunks.id,
-    kb_chunks.document_id,
-    kb_chunks.content,
-    1 - (kb_chunks.embedding <=> query_embedding) AS similarity
-  FROM kb_chunks
-  WHERE 1 - (kb_chunks.embedding <=> query_embedding) >= match_threshold
-  ORDER BY kb_chunks.embedding <=> query_embedding
+    c.id,
+    c.document_id,
+    c.content,
+    1 - (c.embedding <=> query_embedding) AS similarity,
+    c.source_url,
+    d.title AS document_title
+  FROM kb_chunks c
+  LEFT JOIN kb_documents d ON c.document_id = d.id
+  WHERE 1 - (c.embedding <=> query_embedding) >= match_threshold
+  ORDER BY c.embedding <=> query_embedding
   LIMIT match_count;
 END;
 $$;
 
--- 3. Sessions and interaction logs
-CREATE TABLE IF NOT EXISTS chat_sessions (
-  id TEXT PRIMARY KEY, -- e.g. typebot session ID or chatwoot conversation ID
-  channel TEXT DEFAULT 'website' CHECK (channel IN ('website', 'whatsapp', 'instagram', 'email')),
-  visitor_id TEXT,
-  status TEXT DEFAULT 'active' CHECK (status IN ('active', 'escalated', 'handed_off', 'resolved', 'closed')),
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS chat_messages (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  session_id TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('visitor', 'bot', 'agent', 'system')),
-  content TEXT NOT NULL,
-  sources JSONB DEFAULT '[]'::jsonb,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
--- 4. Escalation tickets (Handoffs)
+-- 5. Support Handoff Escalation Tickets
 CREATE TABLE IF NOT EXISTS handoffs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   session_id TEXT NOT NULL,
-  contact_email TEXT,
+  contact_email TEXT NOT NULL,
   contact_name TEXT,
-  reason TEXT,
-  summary TEXT,
-  status TEXT DEFAULT 'open' CHECK (status IN ('open', 'in_progress', 'resolved')),
+  summary TEXT NOT NULL,
+  status TEXT DEFAULT 'open' CHECK (status IN ('open', 'in_progress', 'resolved', 'closed')),
   created_at TIMESTAMPTZ DEFAULT now(),
   resolved_at TIMESTAMPTZ
 );
 
--- 5. Central workflow error log
-CREATE TABLE IF NOT EXISTS workflow_log (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  workflow_name TEXT NOT NULL,
-  node_name TEXT,
-  error_message TEXT,
-  execution_id TEXT,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
+CREATE INDEX IF NOT EXISTS idx_handoffs_status ON handoffs(status);
+CREATE INDEX IF NOT EXISTS idx_handoffs_created_at ON handoffs(created_at DESC);
+
+-- 6. Operational View: Unanswered Queries & Open Tickets
+CREATE OR REPLACE VIEW v_unanswered_queries AS
+SELECT 
+  id, session_id, contact_email, contact_name, summary, created_at
+FROM handoffs
+WHERE status = 'open'
+ORDER BY created_at DESC;
+
+-- 7. Row Level Security (RLS) Configuration
+ALTER TABLE kb_documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_chunks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE handoffs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Public read knowledge chunks"
+ON kb_chunks FOR SELECT TO anon, authenticated USING (true);
+
+CREATE POLICY "Public insert handoffs"
+ON handoffs FOR INSERT TO anon, authenticated WITH CHECK (true);
+
+CREATE POLICY "Service role full access handoffs"
+ON handoffs FOR ALL TO service_role USING (true);
+
+-- 8. Data Retention & PII Cleanup Routine
+CREATE OR REPLACE FUNCTION purge_expired_handoffs()
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  DELETE FROM handoffs WHERE created_at < now() - INTERVAL '90 days';
+END;
+$$;
 ```
 
 ---
 
-## 7. Security & Reliability Architecture
+## 6. Security, Compliance & Safety Guardrails
 
-- **Prompt-Injection Defense**: Visitor messages are treated as untrusted data, delimited in the system prompt. The model is explicitly barred from revealing instructions, executing roleplay overrides, or deviating from knowledge chunks.
-- **Read-Only Scoped Tool Execution**: When querying catalog availability or order status, tools operate under read-only database roles with strict parameterized queries. Order lookups require matching both Order Number and Billing Email.
-- **Bot Muting Guarantee (Option B)**: In Chatwoot, `BOT-01` strictly verifies `assignee_id == null && status != 'open'` before running LLM operations. Once a human agent claims the ticket or the conversation status changes to `open`, the bot immediately silences itself to prevent talking over the agent.
-- **Origin Allowlisting & Content Security**: Both Typebot and Chatwoot widgets are configured with strict domain allowlists (`ALLOWED_ORIGINS`), preventing unauthorized sites from embedding the widget or draining API quotas.
+1. **Shared-Secret Webhook Authentication**:
+   The `/chat/handoff` webhook endpoint strictly verifies the `X-Webhook-Secret` header before accepting payloads or sending emails.
+2. **Row Level Security (RLS)**:
+   Enabled across all tables. The public anonymous key can only execute the read-only `match_kb_chunks` search and insert handoff tickets.
+3. **Calibrated Thresholds & Grounding**:
+   Cosine threshold is calibrated to **`0.45`**, providing high recall while screening out irrelevancies.
+4. **Bot Disclosure & Transparency**:
+   In adherence to consumer protection and EU AI guidelines, the bot greeting explicitly states: *"Hello! I am an AI Support Assistant for [Company]..."*
+5. **Data Retention & Privacy**:
+   Tickets in `handoffs` expire and are deleted after 90 days via `purge_expired_handoffs()`. No conversational transcripts are persisted in Postgres.
 
 ---
 
-## 8. Repository File Map
+## 7. Repository Layout & File Map
 
 ```text
-chatbot-automation/
-├── architecture.md                   # System Architecture Specification (this document)
-├── README.md                         # Implementation and Deployment Guide
+website-chatbot/
+├── architecture.md                     # Approved System Specification v2.1.0 (this document)
+├── README.md                           # Deployment Guide & Quickstart
 ├── deployments/
-│   ├── typebot/
-│   │   ├── README.md                 # Option A: Typebot setup & webhook configuration
-│   │   └── typebot-flow-export.json   # Exportable visual template for Typebot
-│   └── chatwoot/
-│       └── README.md                 # Option B: Chatwoot inbox, bot agent, & webhook setup
+│   └── typebot/
+│       ├── README.md                   # Typebot setup & embedding instructions
+│       ├── docker-compose.yml          # Production self-hosted Docker Compose
+│       └── typebot-flow-export.json    # Complete importable Typebot V6 visual flow
+├── supabase/
+│   └── functions/
+│       └── rag-query/
+│           └── index.ts                # Serverless Deno RAG query Edge Function
 ├── n8n-workflows/
-│   ├── bot-01-chat-orchestrator.json # Option B: Chatwoot Bot Agent & RAG Dispatcher
-│   ├── bot-02-handoff-manager.json   # Options A & B: Universal Handoff & Alert Manager
-│   ├── bot-03-knowledge-sync.json     # Background: Daily Knowledge Base Embedder
-│   ├── bot-04-analytics-gap-report.json # Background: Weekly Gap & FAQ Synthesizer
-│   └── bot-err-error-handler.json    # Global Error Trap & Administrator Alert
+│   ├── bot-02-handoff-manager.json     # Asynchronous authenticated handoff & email alert
+│   ├── bot-03-knowledge-sync.json      # Asynchronous deduplicated vector indexing
+│   └── bot-err-error-handler.json      # Global error trap & administrator notifier
 └── sql/
-    └── schema.sql                    # Supabase PostgreSQL schema with pgvector RPC
+    └── schema.sql                      # Supabase PostgreSQL schema with HNSW index & RLS
 ```

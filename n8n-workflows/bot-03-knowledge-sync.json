@@ -1,5 +1,5 @@
 {
-  "name": "BOT-03 Knowledge Sync",
+  "name": "BOT-03 Knowledge Ingestion & Sync",
   "nodes": [
     {
       "parameters": {
@@ -7,33 +7,26 @@
           "interval": [
             {
               "field": "cronExpression",
-              "expression": "0 2 * * *"
+              "expression": "0 3 * * *"
             }
           ]
         }
       },
-      "id": "0b4c8db9-1483-45fc-ba2b-d3b873ba1c56",
-      "name": "Daily Sync Schedule",
+      "id": "bd4a2674-df0d-4319-8360-0e72c24f6f0f",
+      "name": "Daily Schedule (03:00 AM)",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1,
       "position": [
-        100,
+        200,
         300
       ]
     },
     {
       "parameters": {
+        "url": "={{ $env.LINK_TO_YOUR_SUPABASE_URL }}/rest/v1/kb_documents?select=*",
         "method": "GET",
-        "url": "={{ $env.LINK_TO_YOUR_SUPABASE_URL }}/rest/v1/kb_documents",
-        "sendQuery": true,
-        "queryParameters": {
-          "parameters": [
-            {
-              "name": "select",
-              "value": "*"
-            }
-          ]
-        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -48,33 +41,35 @@
           ]
         }
       },
-      "id": "abeffcda-a79b-45a7-98a1-6d5915b68e49",
-      "name": "Fetch Content Sources",
+      "id": "b7ad7f6e-f948-4f8d-b54e-8744b187c09b",
+      "name": "Fetch Source Documents",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4,
       "position": [
-        340,
+        440,
         300
       ]
     },
     {
       "parameters": {
-        "language": "javaScript",
-        "jsCode": "const docs = Array.isArray($json) ? $json : [$json];\nconst chunks = [];\n\nfor (const doc of docs) {\n  const content = doc.content || doc.title || '';\n  const paragraphs = content.split(/\\n\\n+/);\n  \n  for (let i = 0; i < paragraphs.length; i++) {\n    const text = paragraphs[i].trim();\n    if (text.length > 30) {\n      chunks.push({\n        document_id: doc.id,\n        chunk_index: i,\n        content: text\n      });\n    }\n  }\n}\n\nreturn chunks.map(c => ({ json: c }));"
+        "mode": "runOnceForEachItem",
+        "jsCode": "const doc = $input.item.json;\nconst content = doc.content || doc.title || '';\nconst docId = doc.id;\nconst sourceUrl = doc.source_url || '';\nconst title = doc.title || '';\n\n// Clean sliding window chunking (~400 characters per chunk, 50 char overlap)\nconst chunkSize = 400;\nconst overlap = 50;\nconst chunks = [];\n\nlet start = 0;\nwhile (start < content.length) {\n  const end = Math.min(start + chunkSize, content.length);\n  const chunkText = content.substring(start, end).trim();\n  \n  if (chunkText.length > 20) {\n    // Generate deterministic hash\n    let hash = 0;\n    for (let i = 0; i < chunkText.length; i++) {\n      const char = chunkText.charCodeAt(i);\n      hash = ((hash << 5) - hash) + char;\n      hash = hash & hash;\n    }\n    const contentHash = 'hash_' + Math.abs(hash).toString(16) + '_' + chunkText.substring(0, 10).replace(/\\W/g, '');\n\n    chunks.push({\n      document_id: docId,\n      content: chunkText,\n      source_url: sourceUrl,\n      document_title: title,\n      content_hash: contentHash\n    });\n  }\n  start += (chunkSize - overlap);\n}\n\nreturn chunks.map(c => ({ json: c }));"
       },
-      "id": "7c419c87-1f0c-4928-b449-5ababc8b3bfd",
-      "name": "Chunk Documents",
+      "id": "dfce7ad1-4f79-4355-9205-6424c5174f8a",
+      "name": "Chunk & Compute Content Hash",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        580,
+        680,
         300
       ]
     },
     {
       "parameters": {
-        "method": "POST",
         "url": "https://api.openai.com/v1/embeddings",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -89,22 +84,24 @@
           ]
         },
         "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  model: \"text-embedding-3-small\",\n  input: $json.content\n}) }}"
+        "contentType": "json",
+        "body": "={\n  \"model\": \"text-embedding-3-small\",\n  \"input\": $json.content\n}"
       },
-      "id": "e44051b3-a49c-460b-bc1c-7ed30f17f74c",
-      "name": "Generate Chunk Embedding",
+      "id": "02d31d90-22b5-4df6-bb81-56760be1b991",
+      "name": "OpenAI: Generate Embedding",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4,
       "position": [
-        820,
+        920,
         300
       ]
     },
     {
       "parameters": {
-        "method": "POST",
         "url": "={{ $env.LINK_TO_YOUR_SUPABASE_URL }}/rest/v1/kb_chunks",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -127,58 +124,58 @@
           ]
         },
         "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  document_id: $('Chunk Documents').first().json.document_id,\n  content: $('Chunk Documents').first().json.content,\n  embedding: $json.data[0].embedding\n}) }}"
+        "contentType": "json",
+        "body": "={\n  \"document_id\": $('Chunk & Compute Content Hash').item.json.document_id,\n  \"content\": $('Chunk & Compute Content Hash').item.json.content,\n  \"source_url\": $('Chunk & Compute Content Hash').item.json.source_url,\n  \"content_hash\": $('Chunk & Compute Content Hash').item.json.content_hash,\n  \"embedding\": $json.data[0].embedding\n}"
       },
-      "id": "f99060c8-9fa8-4dcc-9abd-e1c9dfa9edb4",
-      "name": "Upsert kb_chunks",
+      "id": "e0f6b3a6-a8fb-4501-9156-80d300415b64",
+      "name": "Supabase: Upsert Vector Chunk",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4,
       "position": [
-        1060,
+        1160,
         300
       ]
     }
   ],
   "connections": {
-    "Daily Sync Schedule": {
+    "Daily Schedule (03:00 AM)": {
       "main": [
         [
           {
-            "node": "Fetch Content Sources",
+            "node": "Fetch Source Documents",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Fetch Content Sources": {
+    "Fetch Source Documents": {
       "main": [
         [
           {
-            "node": "Chunk Documents",
+            "node": "Chunk & Compute Content Hash",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Chunk Documents": {
+    "Chunk & Compute Content Hash": {
       "main": [
         [
           {
-            "node": "Generate Chunk Embedding",
+            "node": "OpenAI: Generate Embedding",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Generate Chunk Embedding": {
+    "OpenAI: Generate Embedding": {
       "main": [
         [
           {
-            "node": "Upsert kb_chunks",
+            "node": "Supabase: Upsert Vector Chunk",
             "type": "main",
             "index": 0
           }
@@ -190,11 +187,11 @@
   "settings": {
     "executionOrder": "v1"
   },
-  "versionId": "f71a442a-612c-4f7b-8b74-3c879cd52dc3",
+  "versionId": "df41864b-0078-4bd1-9688-8f622d49fd1b",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "automation-suite"
   },
-  "id": "c65e03b4",
+  "id": "5a763cf0",
   "tags": []
 }

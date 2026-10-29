@@ -1,69 +1,37 @@
 {
-  "name": "BOT-ERR Error Handler",
+  "name": "BOT-ERR Global Error Handler",
   "nodes": [
     {
       "parameters": {},
-      "id": "4ba6444a-89d3-4665-905e-1ec26a5daaab",
-      "name": "Chatbot Error Trigger",
+      "id": "e73640ac-422c-46e9-b090-5c379b6d7a2d",
+      "name": "Error Trigger",
       "type": "n8n-nodes-base.errorTrigger",
       "typeVersion": 1,
       "position": [
-        100,
+        240,
         300
       ]
     },
     {
       "parameters": {
-        "language": "javaScript",
-        "jsCode": "const err = $json.execution?.error || {};\nconst workflow = $json.workflow || {};\n\nreturn [{\n  json: {\n    workflowName: workflow.name,\n    nodeName: err.node?.name || 'Unknown Node',\n    message: err.message || 'Unknown runtime error',\n    executionId: $json.execution?.id,\n    timestamp: new Date().toISOString()\n  }\n}];"
+        "mode": "runOnceForEachItem",
+        "jsCode": "const errorData = $input.item.json;\nconst execution = errorData.execution || {};\nconst workflow = errorData.workflow || {};\nconst error = errorData.execution?.error || {};\n\nreturn {\n  json: {\n    workflow_name: workflow.name || 'Chatbot Workflow',\n    node_name: error.node?.name || 'Unknown Node',\n    error_message: error.message || 'Unknown runtime error',\n    execution_id: execution.id || '',\n    occurred_at: new Date().toISOString()\n  }\n};"
       },
-      "id": "621e4f31-c420-4f19-b2b9-aef3fdef37b0",
-      "name": "Format Error Record",
+      "id": "4c2eedbb-5b60-461b-9af5-b2e27aaf550e",
+      "name": "Format Error Incident",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        340,
+        480,
         300
       ]
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "={{ $env.LINK_TO_YOUR_SUPABASE_URL }}/rest/v1/workflow_log",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "apikey",
-              "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
-            },
-            {
-              "name": "Authorization",
-              "value": "Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  workflow_name: $json.workflowName,\n  node_name: $json.nodeName,\n  error_message: $json.message,\n  execution_id: $json.executionId\n}) }}"
-      },
-      "id": "9f0d530e-fecb-4e02-a00d-197994a8c421",
-      "name": "Log Error to Supabase",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
-      "position": [
-        580,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
         "url": "https://api.resend.com/emails",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -78,47 +46,36 @@
           ]
         },
         "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  from: $env.SYSTEM_SENDER_EMAIL || \"alerts@yourdomain.com\",\n  to: [$env.OWNER_NOTIFICATION_EMAIL],\n  subject: \"[ALERT] Chatbot Workflow Error: \" + $json.workflowName,\n  html: `<p>A chatbot workflow failed:</p>\n<ul>\n  <li>Workflow: ${$json.workflowName}</li>\n  <li>Node: ${$json.nodeName}</li>\n  <li>Error: ${$json.message}</li>\n</ul>`\n}) }}"
+        "contentType": "json",
+        "body": "={\n  \"from\": \"{{ $env.SYSTEM_SENDER_EMAIL }}\",\n  \"to\": [\"{{ $env.ADMIN_NOTIFICATION_EMAIL }}\"],\n  \"subject\": \"[CRITICAL] Chatbot Background Workflow Error: \" + $json.node_name,\n  \"html\": \"<h3>Chatbot Workflow Failure</h3>\" +\n          \"<p><strong>Workflow:</strong> \" + $json.workflow_name + \"</p>\" +\n          \"<p><strong>Node:</strong> \" + $json.node_name + \"</p>\" +\n          \"<p><strong>Error:</strong> \" + $json.error_message + \"</p>\" +\n          \"<p><strong>Execution ID:</strong> \" + $json.execution_id + \"</p>\"\n}"
       },
-      "id": "f9db929f-7aa0-4b5f-b965-a846e236f827",
-      "name": "Alert Admin via Resend",
+      "id": "80f1b9f5-48a2-4d64-b327-9fd0d1a2afca",
+      "name": "Resend: Send Admin Error Alert",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4,
       "position": [
-        820,
+        720,
         300
       ]
     }
   ],
   "connections": {
-    "Chatbot Error Trigger": {
+    "Error Trigger": {
       "main": [
         [
           {
-            "node": "Format Error Record",
+            "node": "Format Error Incident",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Format Error Record": {
+    "Format Error Incident": {
       "main": [
         [
           {
-            "node": "Log Error to Supabase",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Log Error to Supabase": {
-      "main": [
-        [
-          {
-            "node": "Alert Admin via Resend",
+            "node": "Resend: Send Admin Error Alert",
             "type": "main",
             "index": 0
           }
@@ -130,11 +87,11 @@
   "settings": {
     "executionOrder": "v1"
   },
-  "versionId": "58b4dfe1-e78a-4ea0-a573-b02a99ea7abc",
+  "versionId": "fa2ffbe6-cfc7-4e19-a16d-3a41ac0b210d",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "automation-suite"
   },
-  "id": "f2ffb22b",
+  "id": "25e3675f",
   "tags": []
 }

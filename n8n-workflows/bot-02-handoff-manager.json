@@ -1,113 +1,42 @@
 {
-  "name": "BOT-02 Handoff Manager",
+  "name": "BOT-02 Handoff & Escalation Manager",
   "nodes": [
     {
       "parameters": {
         "httpMethod": "POST",
         "path": "chat/handoff",
-        "responseMode": "responseNode"
+        "responseMode": "responseNode",
+        "options": {}
       },
-      "id": "b084094d-e587-4616-ad64-4d0afb49cdf8",
-      "name": "Handoff Webhook Ingest",
+      "id": "8625e241-7555-48cd-a97d-de30075194a7",
+      "name": "Webhook: /chat/handoff",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
-        100,
+        200,
         300
       ]
     },
     {
       "parameters": {
-        "language": "javaScript",
-        "jsCode": "const body = $json.body || $json;\n\nconst sessionId = body.sessionId || body.session_id || ('sess_' + Date.now());\nconst contactEmail = body.contactEmail || body.email || body.senderEmail || 'Not provided';\nconst contactName = body.contactName || body.name || body.senderName || 'Visitor';\nconst reason = body.reason || body.intent || 'Human assistance requested';\nconst source = body.source || (body.conversationId ? 'chatwoot' : 'typebot');\nconst userNotes = body.message || body.notes || '';\n\nreturn [{\n  json: {\n    sessionId,\n    contactEmail,\n    contactName,\n    reason,\n    source,\n    userNotes,\n    timestamp: new Date().toISOString()\n  }\n}];"
+        "mode": "runOnceForEachItem",
+        "jsCode": "const headers = $input.item.json.headers || {};\nconst body = $input.item.json.body || {};\n\n// Verify shared-secret authentication\nconst providedSecret = headers['x-webhook-secret'] || body.secret || '';\nconst expectedSecret = $env.CHAT_WEBHOOK_SECRET || 'secret_chat_handoff_123';\n\nif (expectedSecret && providedSecret !== expectedSecret) {\n  throw new Error(\"Unauthorized: Invalid X-Webhook-Secret header.\");\n}\n\nconst sessionId = body.sessionId || body.session_id || ('sess_' + Date.now());\nconst contactEmail = body.contactEmail || body.email || 'no-email@provided.com';\nconst contactName = body.contactName || body.name || 'Anonymous Visitor';\nconst query = body.query || body.userQuery || 'General escalation';\nconst reason = body.reason || 'Visitor requested human support or low confidence';\n\nreturn {\n  json: {\n    session_id: sessionId,\n    contact_email: contactEmail,\n    contact_name: contactName,\n    query: query,\n    reason: reason,\n    summary: `Customer inquiry: \"${query}\". Reason: ${reason}.`,\n    created_at: new Date().toISOString()\n  }\n};"
       },
-      "id": "209b4d14-55c9-4f4a-a15b-05ff8f9b1ea7",
-      "name": "Normalize Handoff Data",
+      "id": "2bbd3a76-1c82-48dd-8ca0-041bb85fca0f",
+      "name": "Verify Secret & Normalize Payload",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        340,
+        440,
         300
       ]
     },
     {
       "parameters": {
-        "method": "GET",
-        "url": "={{ $env.LINK_TO_YOUR_SUPABASE_URL }}/rest/v1/chat_messages",
-        "sendQuery": true,
-        "queryParameters": {
-          "parameters": [
-            {
-              "name": "session_id",
-              "value": "eq.{{ $json.sessionId }}"
-            },
-            {
-              "name": "order",
-              "value": "created_at.desc"
-            },
-            {
-              "name": "limit",
-              "value": "10"
-            }
-          ]
-        },
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "apikey",
-              "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
-            },
-            {
-              "name": "Authorization",
-              "value": "Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
-            }
-          ]
-        }
-      },
-      "id": "9c7e1157-6380-4abd-82d6-ab143595ab83",
-      "name": "Fetch Session Context",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
-      "position": [
-        580,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "https://api.openai.com/v1/chat/completions",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "Bearer {{ $env.OPENAI_API_KEY }}"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  model: \"gpt-4o-mini\",\n  messages: [\n    {\n      role: \"system\",\n      content: \"Summarize this customer support chat in 2 concise sentences. Highlight the core customer question and the reason for escalation.\"\n    },\n    {\n      role: \"user\",\n      content: JSON.stringify($json)\n    }\n  ]\n}) }}"
-      },
-      "id": "e3c6d28b-cda5-4a0e-a1ad-0f7c53fd4c77",
-      "name": "Synthesize Context Summary",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
-      "position": [
-        820,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
         "url": "={{ $env.LINK_TO_YOUR_SUPABASE_URL }}/rest/v1/handoffs",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -130,22 +59,24 @@
           ]
         },
         "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  session_id: $('Normalize Handoff Data').first().json.sessionId,\n  contact_email: $('Normalize Handoff Data').first().json.contactEmail,\n  reason: $('Normalize Handoff Data').first().json.reason,\n  summary: $json.choices[0].message.content,\n  status: 'open'\n}) }}"
+        "contentType": "json",
+        "body": "={\n  \"session_id\": $json.session_id,\n  \"contact_email\": $json.contact_email,\n  \"contact_name\": $json.contact_name,\n  \"summary\": $json.summary,\n  \"status\": \"open\"\n}"
       },
-      "id": "fcc40752-207a-48d6-8c6f-cfe12ae399a1",
-      "name": "Create Handoff Record in Supabase",
+      "id": "62cf358e-f182-41b3-8600-52a4c7158880",
+      "name": "Supabase: Insert Handoff Ticket",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4,
       "position": [
-        1060,
+        680,
         300
       ]
     },
     {
       "parameters": {
-        "method": "POST",
         "url": "https://api.resend.com/emails",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -160,94 +91,73 @@
           ]
         },
         "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  from: $env.SYSTEM_SENDER_EMAIL || \"support-alerts@yourdomain.com\",\n  to: [$env.OWNER_NOTIFICATION_EMAIL],\n  subject: `[HANDOFF] Website Support Needed (${$('Normalize Handoff Data').first().json.source.toUpperCase()})`,\n  html: `<h3>New Customer Chat Escalation</h3>\n<p><strong>Channel / Origin:</strong> ${$('Normalize Handoff Data').first().json.source}</p>\n<p><strong>Customer Name:</strong> ${$('Normalize Handoff Data').first().json.contactName}</p>\n<p><strong>Customer Email:</strong> ${$('Normalize Handoff Data').first().json.contactEmail}</p>\n<p><strong>Escalation Reason:</strong> ${$('Normalize Handoff Data').first().json.reason}</p>\n<p><strong>Summary:</strong> ${$('Synthesize Context Summary').first().json.choices[0].message.content}</p>\n<p><a href=\"${$env.LINK_TO_YOUR_DASHBOARD || 'https://dashboard.yourdomain.com'}/inbox\">Open Inbox in Dashboard</a></p>`\n}) }}"
+        "contentType": "json",
+        "body": "={\n  \"from\": \"{{ $env.SYSTEM_SENDER_EMAIL }}\",\n  \"to\": [\"{{ $env.OWNER_NOTIFICATION_EMAIL }}\"],\n  \"subject\": \"[ACTION REQUIRED] New Support Handoff Ticket: \" + $('Verify Secret & Normalize Payload').item.json.contact_name,\n  \"html\": \"<h3>New Website Chat Escalation Ticket</h3>\" +\n          \"<p><strong>Visitor:</strong> \" + $('Verify Secret & Normalize Payload').item.json.contact_name + \" (\" + $('Verify Secret & Normalize Payload').item.json.contact_email + \")</p>\" +\n          \"<p><strong>Question:</strong> \" + $('Verify Secret & Normalize Payload').item.json.query + \"</p>\" +\n          \"<p><strong>Reason:</strong> \" + $('Verify Secret & Normalize Payload').item.json.reason + \"</p>\" +\n          \"<p><strong>Session ID:</strong> \" + $('Verify Secret & Normalize Payload').item.json.session_id + \"</p>\" +\n          \"<hr><p><a href=\\\"\" + $env.LINK_TO_YOUR_DASHBOARD + \"\\\">Open Support Dashboard</a></p>\"\n}"
       },
-      "id": "133478ad-16b5-4851-95fd-579f829d3e22",
-      "name": "Alert Team via Resend",
+      "id": "912ef2e1-2092-4e46-86f2-2972e623a944",
+      "name": "Resend: Send Support Notification",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4,
       "position": [
-        1300,
+        920,
         300
       ]
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({\n  success: true,\n  status: \"escalated\",\n  message: \"Support handoff ticket created and team notified.\"\n}) }}"
+        "responseBody": "={\n  \"success\": true,\n  \"status\": \"escalated\",\n  \"ticket_id\": $('Supabase: Insert Handoff Ticket').item.json[0]?.id || 'ticket_logged',\n  \"message\": \"Support team notified successfully.\"\n}",
+        "options": {}
       },
-      "id": "27e3f306-3e18-4a92-94f2-c880d238096f",
-      "name": "Respond Handoff Handled",
+      "id": "4c1270e3-b933-4d3d-941f-bb19674fdbdb",
+      "name": "Respond to Webhook",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
       "position": [
-        1540,
+        1160,
         300
       ]
     }
   ],
   "connections": {
-    "Handoff Webhook Ingest": {
+    "Webhook: /chat/handoff": {
       "main": [
         [
           {
-            "node": "Normalize Handoff Data",
+            "node": "Verify Secret & Normalize Payload",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Normalize Handoff Data": {
+    "Verify Secret & Normalize Payload": {
       "main": [
         [
           {
-            "node": "Fetch Session Context",
+            "node": "Supabase: Insert Handoff Ticket",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Fetch Session Context": {
+    "Supabase: Insert Handoff Ticket": {
       "main": [
         [
           {
-            "node": "Synthesize Context Summary",
+            "node": "Resend: Send Support Notification",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Synthesize Context Summary": {
+    "Resend: Send Support Notification": {
       "main": [
         [
           {
-            "node": "Create Handoff Record in Supabase",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Create Handoff Record in Supabase": {
-      "main": [
-        [
-          {
-            "node": "Alert Team via Resend",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Alert Team via Resend": {
-      "main": [
-        [
-          {
-            "node": "Respond Handoff Handled",
+            "node": "Respond to Webhook",
             "type": "main",
             "index": 0
           }
@@ -259,11 +169,11 @@
   "settings": {
     "executionOrder": "v1"
   },
-  "versionId": "e971e0a8-ed78-41ea-82ca-c5a6b24e0fcd",
+  "versionId": "9b676b79-c57a-4eb1-9ef6-58f4af8b899a",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "automation-suite"
   },
-  "id": "ce6a7786",
+  "id": "559955bf",
   "tags": []
 }

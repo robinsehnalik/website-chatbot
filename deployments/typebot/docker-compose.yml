@@ -1,0 +1,50 @@
+version: "3.8"
+
+services:
+  typebot-db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: typebot
+      POSTGRES_USER: typebot
+      POSTGRES_PASSWORD: typebot_secure_password
+    volumes:
+      - typebot_db_data:/var/lib/postgresql/data
+    networks:
+      - typebot-net
+
+  typebot-builder:
+    image: baptistearno/typebot-builder:latest
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://typebot:typebot_secure_password@typebot-db:5432/typebot
+      NEXTAUTH_URL: http://localhost:3000
+      NEXT_PUBLIC_VIEWER_URL: http://localhost:3001
+      ENCRYPTION_SECRET: a_random_32_character_string_12345
+      ADMIN_EMAIL: admin@yourdomain.com
+    depends_on:
+      - typebot-db
+    networks:
+      - typebot-net
+
+  typebot-viewer:
+    image: baptistearno/typebot-viewer:latest
+    restart: always
+    ports:
+      - "3001:3000"
+    environment:
+      DATABASE_URL: postgres://typebot:typebot_secure_password@typebot-db:5432/typebot
+      NEXTAUTH_URL: http://localhost:3001
+      ENCRYPTION_SECRET: a_random_32_character_string_12345
+    depends_on:
+      - typebot-db
+    networks:
+      - typebot-net
+
+volumes:
+  typebot_db_data:
+
+networks:
+  typebot-net:
