@@ -20,7 +20,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const headers = $input.item.json.headers || {};\nconst body = $input.item.json.body || {};\n\n// Verify shared-secret authentication\nconst providedSecret = headers['x-webhook-secret'] || body.secret || '';\nconst expectedSecret = $env.CHAT_WEBHOOK_SECRET || 'secret_chat_handoff_123';\n\nif (expectedSecret && providedSecret !== expectedSecret) {\n  throw new Error(\"Unauthorized: Invalid X-Webhook-Secret header.\");\n}\n\nconst sessionId = body.sessionId || body.session_id || ('sess_' + Date.now());\nconst contactEmail = body.contactEmail || body.email || 'no-email@provided.com';\nconst contactName = body.contactName || body.name || 'Anonymous Visitor';\nconst query = body.query || body.userQuery || 'General escalation';\nconst reason = body.reason || 'Visitor requested human support or low confidence';\n\nreturn {\n  json: {\n    session_id: sessionId,\n    contact_email: contactEmail,\n    contact_name: contactName,\n    query: query,\n    reason: reason,\n    summary: `Customer inquiry: \"${query}\". Reason: ${reason}.`,\n    created_at: new Date().toISOString()\n  }\n};"
+        "jsCode": "const headers = $input.item.json.headers || {};\nconst body = $input.item.json.body || {};\n\n// 1. Verify shared-secret authentication (X-Webhook-Secret)\nconst providedSecret = headers['x-webhook-secret'] || body.secret || '';\nconst expectedSecret = $env.CHAT_WEBHOOK_SECRET;\n\nif (!expectedSecret || providedSecret !== expectedSecret) {\n  throw new Error(\"Unauthorized: Invalid or missing X-Webhook-Secret header.\");\n}\n\n// 2. Validate payload contract: { sessionId, contactEmail, contactName, inquiry, source }\nconst sessionId = String(body.sessionId || body.session_id || '').trim();\nconst contactEmail = String(body.contactEmail || body.email || '').trim().toLowerCase();\nconst contactName = String(body.contactName || body.name || 'Anonymous Visitor').trim();\nconst rawInquiry = String(body.inquiry || body.query || '').trim();\nconst source = String(body.source || 'typebot').trim();\n\nconst emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\nif (!contactEmail || !emailRegex.test(contactEmail)) {\n  throw new Error(\"Validation Error: Invalid contact email address format.\");\n}\nif (!sessionId) {\n  throw new Error(\"Validation Error: Missing required sessionId parameter.\");\n}\n\n// Enforce 1000 char limit on inquiry\nconst inquiry = rawInquiry.substring(0, 1000) || 'General customer inquiry';\n\n// Helper to HTML-escape untrusted user inputs\nfunction escapeHtml(str) {\n  return String(str)\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#039;');\n}\n\nreturn {\n  json: {\n    session_id: sessionId,\n    contact_email: contactEmail,\n    contact_name: contactName.substring(0, 100),\n    inquiry: inquiry,\n    summary: inquiry,\n    source: source,\n    escaped_name: escapeHtml(contactName.substring(0, 100)),\n    escaped_email: escapeHtml(contactEmail),\n    escaped_inquiry: escapeHtml(inquiry),\n    escaped_session_id: escapeHtml(sessionId),\n    created_at: new Date().toISOString()\n  }\n};"
       },
       "id": "2bbd3a76-1c82-48dd-8ca0-041bb85fca0f",
       "name": "Verify Secret & Normalize Payload",
@@ -33,7 +33,7 @@
     },
     {
       "parameters": {
-        "url": "={{ $env.LINK_TO_YOUR_SUPABASE_URL }}/rest/v1/handoffs",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/handoffs",
         "method": "POST",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
@@ -92,7 +92,7 @@
         },
         "sendBody": true,
         "contentType": "json",
-        "body": "={\n  \"from\": \"{{ $env.SYSTEM_SENDER_EMAIL }}\",\n  \"to\": [\"{{ $env.OWNER_NOTIFICATION_EMAIL }}\"],\n  \"subject\": \"[ACTION REQUIRED] New Support Handoff Ticket: \" + $('Verify Secret & Normalize Payload').item.json.contact_name,\n  \"html\": \"<h3>New Website Chat Escalation Ticket</h3>\" +\n          \"<p><strong>Visitor:</strong> \" + $('Verify Secret & Normalize Payload').item.json.contact_name + \" (\" + $('Verify Secret & Normalize Payload').item.json.contact_email + \")</p>\" +\n          \"<p><strong>Question:</strong> \" + $('Verify Secret & Normalize Payload').item.json.query + \"</p>\" +\n          \"<p><strong>Reason:</strong> \" + $('Verify Secret & Normalize Payload').item.json.reason + \"</p>\" +\n          \"<p><strong>Session ID:</strong> \" + $('Verify Secret & Normalize Payload').item.json.session_id + \"</p>\" +\n          \"<hr><p><a href=\\\"\" + $env.LINK_TO_YOUR_DASHBOARD + \"\\\">Open Support Dashboard</a></p>\"\n}"
+        "body": "={\n  \"from\": \"{{ $env.SYSTEM_SENDER_EMAIL }}\",\n  \"to\": [\"{{ $env.SUPPORT_ALERT_EMAIL || $env.OWNER_NOTIFICATION_EMAIL }}\"],\n  \"subject\": \"[ACTION REQUIRED] New Support Handoff Ticket: \" + $('Verify Secret & Normalize Payload').item.json.escaped_name,\n  \"html\": \"<h3>New Website Chat Escalation Ticket</h3>\" +\n          \"<p><strong>Visitor:</strong> \" + $('Verify Secret & Normalize Payload').item.json.escaped_name + \" (\" + $('Verify Secret & Normalize Payload').item.json.escaped_email + \")</p>\" +\n          \"<p><strong>Inquiry Context:</strong> \" + $('Verify Secret & Normalize Payload').item.json.escaped_inquiry + \"</p>\" +\n          \"<p><strong>Session ID:</strong> \" + $('Verify Secret & Normalize Payload').item.json.escaped_session_id + \"</p>\" +\n          \"<p><strong>Source:</strong> \" + $('Verify Secret & Normalize Payload').item.json.source + \"</p>\" +\n          \"<hr><p>Please review and reply to the customer directly via email.</p>\"\n}"
       },
       "id": "912ef2e1-2092-4e46-86f2-2972e623a944",
       "name": "Resend: Send Support Notification",
@@ -106,7 +106,7 @@
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={\n  \"success\": true,\n  \"status\": \"escalated\",\n  \"ticket_id\": $('Supabase: Insert Handoff Ticket').item.json[0]?.id || 'ticket_logged',\n  \"message\": \"Support team notified successfully.\"\n}",
+        "responseBody": "={\n  \"success\": true,\n  \"ticket_id\": $('Supabase: Insert Handoff Ticket').item.json[0]?.id || 'ticket_logged'\n}",
         "options": {}
       },
       "id": "4c1270e3-b933-4d3d-941f-bb19674fdbdb",

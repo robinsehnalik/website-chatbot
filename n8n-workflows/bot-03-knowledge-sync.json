@@ -23,7 +23,7 @@
     },
     {
       "parameters": {
-        "url": "={{ $env.LINK_TO_YOUR_SUPABASE_URL }}/rest/v1/kb_documents?select=*",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/kb_documents?select=*",
         "method": "GET",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
@@ -53,7 +53,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const doc = $input.item.json;\nconst content = doc.content || doc.title || '';\nconst docId = doc.id;\nconst sourceUrl = doc.source_url || '';\nconst title = doc.title || '';\n\n// Clean sliding window chunking (~400 characters per chunk, 50 char overlap)\nconst chunkSize = 400;\nconst overlap = 50;\nconst chunks = [];\n\nlet start = 0;\nwhile (start < content.length) {\n  const end = Math.min(start + chunkSize, content.length);\n  const chunkText = content.substring(start, end).trim();\n  \n  if (chunkText.length > 20) {\n    // Generate deterministic hash\n    let hash = 0;\n    for (let i = 0; i < chunkText.length; i++) {\n      const char = chunkText.charCodeAt(i);\n      hash = ((hash << 5) - hash) + char;\n      hash = hash & hash;\n    }\n    const contentHash = 'hash_' + Math.abs(hash).toString(16) + '_' + chunkText.substring(0, 10).replace(/\\W/g, '');\n\n    chunks.push({\n      document_id: docId,\n      content: chunkText,\n      source_url: sourceUrl,\n      document_title: title,\n      content_hash: contentHash\n    });\n  }\n  start += (chunkSize - overlap);\n}\n\nreturn chunks.map(c => ({ json: c }));"
+        "jsCode": "const doc = $input.item.json;\nconst content = doc.content || doc.title || '';\nconst docId = doc.id;\nconst sourceUrl = doc.source_url || '';\nconst title = doc.title || '';\n\n// Clean sliding window chunking (~400 characters per chunk, 50 char overlap)\nconst chunkSize = 400;\nconst overlap = 50;\nconst chunks = [];\n\nlet start = 0;\nwhile (start < content.length) {\n  const end = Math.min(start + chunkSize, content.length);\n  const chunkText = content.substring(start, end).trim();\n  \n  if (chunkText.length > 20) {\n    // Compute content hash\n    let hash = 0;\n    for (let i = 0; i < chunkText.length; i++) {\n      const char = chunkText.charCodeAt(i);\n      hash = ((hash << 5) - hash) + char;\n      hash = hash & hash;\n    }\n    const contentHash = 'hash_' + Math.abs(hash).toString(16) + '_' + chunkText.substring(0, 10).replace(/\\W/g, '');\n\n    chunks.push({\n      document_id: docId,\n      content: chunkText,\n      source_url: sourceUrl,\n      document_title: title,\n      content_hash: contentHash\n    });\n  }\n  start += (chunkSize - overlap);\n}\n\nreturn chunks.map(c => ({ json: c }));"
       },
       "id": "dfce7ad1-4f79-4355-9205-6424c5174f8a",
       "name": "Chunk & Compute Content Hash",
@@ -98,7 +98,7 @@
     },
     {
       "parameters": {
-        "url": "={{ $env.LINK_TO_YOUR_SUPABASE_URL }}/rest/v1/kb_chunks",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/kb_chunks",
         "method": "POST",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
