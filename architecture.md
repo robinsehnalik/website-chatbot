@@ -1,8 +1,7 @@
 # Automation Architecture — Website AI Chatbot System
 
-**Document Version:** 2.1.0  
-**Status:** Approved Production Architecture  
-**Author:** Principal Automation Architect and Systems Engineer  
+**Document Version:** 2.1
+**Author:** Robin Sehnalík
 
 ---
 
@@ -11,15 +10,18 @@
 The **Website AI Chatbot System** provides low-latency, grounded customer assistance and seamless asynchronous human support escalation for company websites and e-commerce stores.
 
 ### 1. Architectural Decisions & Scope
+
 Based on production evaluation and architecture review, this system standardizes on a **single approved architecture**:
-* **Conversational Frontend**: Self-hosted or cloud-managed **Typebot** acting as the embeddable web chat widget and visual conversation manager.
-* **Low-Latency RAG Engine**: A dedicated **Supabase Edge Function (`rag-query`)** that computes query embeddings, executes calibrated vector similarity search against Supabase pgvector, and generates grounded completions via OpenAI (`gpt-4o-mini`).
-* **Asynchronous Automation Layer (n8n)**: Dedicated exclusively to asynchronous workflows:
-  * [`bot-02-handoff-manager.json`](./n8n-workflows/bot-02-handoff-manager.json): Ingests authenticated escalation webhooks, creates support tickets, and delivers email/Slack alerts to human staff.
-  * [`bot-03-knowledge-sync.json`](./n8n-workflows/bot-03-knowledge-sync.json): Scheduled and webhook-driven knowledge ingestion and vector synchronization.
-  * [`bot-err-error-handler.json`](./n8n-workflows/bot-err-error-handler.json): Global exception monitoring.
+
+- **Conversational Frontend**: Self-hosted or cloud-managed **Typebot** acting as the embeddable web chat widget and visual conversation manager.
+- **Low-Latency RAG Engine**: A dedicated **Supabase Edge Function (`rag-query`)** that computes query embeddings, executes calibrated vector similarity search against Supabase pgvector, and generates grounded completions via OpenAI (`gpt-4o-mini`).
+- **Asynchronous Automation Layer (n8n)**: Dedicated exclusively to asynchronous workflows:
+  - [`bot-02-handoff-manager.json`](./n8n-workflows/bot-02-handoff-manager.json): Ingests authenticated escalation webhooks, creates support tickets, and delivers email/Slack alerts to human staff.
+  - [`bot-03-knowledge-sync.json`](./n8n-workflows/bot-03-knowledge-sync.json): Scheduled and webhook-driven knowledge ingestion and vector synchronization.
+  - [`bot-err-error-handler.json`](./n8n-workflows/bot-err-error-handler.json): Global exception monitoring.
 
 ### 2. Problems Resolved from Prior Iterations
+
 1. **Zero Visitor Loop Congestion in n8n**: The visitor query path is handled entirely by the Supabase Edge Function (~1.2s turn latency). n8n is never in the real-time token streaming loop.
 2. **No Frontend Code Debt**: Replaced custom vanilla JavaScript widgets with battle-tested Typebot web components.
 3. **Calibrated Semantic Retrieval**: Lowered the cosine similarity threshold from an unrealistic `0.70` down to a calibrated **`0.45`** for `text-embedding-3-small`. Replaced `ivfflat` with an **HNSW index** to prevent recall drop on small or growing datasets.
@@ -105,6 +107,7 @@ flowchart TD
 ## 3. Core Data Flows & Sequence Diagrams
 
 ### 3.1. Standard Visitor RAG Query (Real-Time Sub-2s Path)
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -133,6 +136,7 @@ sequenceDiagram
 ```
 
 ### 3.2. Asynchronous Human Escalation Flow
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -160,18 +164,19 @@ sequenceDiagram
 ## 4. Workflow & Component Specifications
 
 ### 4.1. Supabase Edge Function (`supabase/functions/rag-query/index.ts`)
-* **Role**: Single serverless endpoint for Typebot.
-* **Authentication**: Authenticated via Supabase Anon Key with IP rate-limiting.
-* **Calibrated Search**: Calls `match_kb_chunks` with `match_threshold = 0.45`.
-* **Latency**: Typical round-trip execution is 800ms–1400ms.
+
+- **Role**: Single serverless endpoint for Typebot.
+- **Authentication**: Authenticated via Supabase Anon Key with IP rate-limiting.
+- **Calibrated Search**: Calls `match_kb_chunks` with `match_threshold = 0.45`.
+- **Latency**: Typical round-trip execution is 800ms–1400ms.
 
 ### 4.2. Asynchronous n8n Workflows (`n8n-workflows/`)
 
-| File | Name | Trigger | Primary Purpose |
-| :--- | :--- | :--- | :--- |
-| [`bot-02-handoff-manager.json`](./n8n-workflows/bot-02-handoff-manager.json) | BOT-02 Handoff Manager | Webhook (`POST /chat/handoff`) | Authenticates webhook via `X-Webhook-Secret`, records ticket in `handoffs`, and dispatches alert email via Resend. |
-| [`bot-03-knowledge-sync.json`](./n8n-workflows/bot-03-knowledge-sync.json) | BOT-03 Knowledge Ingestion & Sync | Cron (`0 3 * * *` Daily) | Chunks documents with `content_hash` deduplication, generates embeddings, and upserts into `kb_chunks`. |
-| [`bot-err-error-handler.json`](./n8n-workflows/bot-err-error-handler.json) | BOT-ERR Global Error Handler | Error Trigger | Traps uncaught exceptions across background workflows and alerts admin. |
+| File                                                                         | Name                              | Trigger                        | Primary Purpose                                                                                                    |
+| :--------------------------------------------------------------------------- | :-------------------------------- | :----------------------------- | :----------------------------------------------------------------------------------------------------------------- |
+| [`bot-02-handoff-manager.json`](./n8n-workflows/bot-02-handoff-manager.json) | BOT-02 Handoff Manager            | Webhook (`POST /chat/handoff`) | Authenticates webhook via `X-Webhook-Secret`, records ticket in `handoffs`, and dispatches alert email via Resend. |
+| [`bot-03-knowledge-sync.json`](./n8n-workflows/bot-03-knowledge-sync.json)   | BOT-03 Knowledge Ingestion & Sync | Cron (`0 3 * * *` Daily)       | Chunks documents with `content_hash` deduplication, generates embeddings, and upserts into `kb_chunks`.            |
+| [`bot-err-error-handler.json`](./n8n-workflows/bot-err-error-handler.json)   | BOT-ERR Global Error Handler      | Error Trigger                  | Traps uncaught exceptions across background workflows and alerts admin.                                            |
 
 ---
 
@@ -202,7 +207,7 @@ CREATE TABLE IF NOT EXISTS kb_chunks (
 );
 
 -- HNSW Index for rapid, accurate vector similarity search
-CREATE INDEX IF NOT EXISTS idx_kb_chunks_hnsw 
+CREATE INDEX IF NOT EXISTS idx_kb_chunks_hnsw
 ON kb_chunks USING hnsw (embedding vector_cosine_ops);
 
 -- 4. Vector Match Function (Calibrated Threshold: 0.45)
@@ -222,7 +227,7 @@ RETURNS TABLE (
 LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
   RETURN QUERY
-  SELECT 
+  SELECT
     c.id,
     c.document_id,
     c.content,
@@ -254,7 +259,7 @@ CREATE INDEX IF NOT EXISTS idx_handoffs_created_at ON handoffs(created_at DESC);
 
 -- 6. Operational View: Unanswered Queries & Open Tickets
 CREATE OR REPLACE VIEW v_unanswered_queries AS
-SELECT 
+SELECT
   id, session_id, contact_email, contact_name, summary, created_at
 FROM handoffs
 WHERE status = 'open'
@@ -294,7 +299,7 @@ $$;
 3. **Calibrated Thresholds & Grounding**:
    Cosine threshold is calibrated to **`0.45`**, providing high recall while screening out irrelevancies.
 4. **Bot Disclosure & Transparency**:
-   In adherence to consumer protection and EU AI guidelines, the bot greeting explicitly states: *"Hello! I am an AI Support Assistant for [Company]..."*
+   In adherence to consumer protection and EU AI guidelines, the bot greeting explicitly states: _"Hello! I am an AI Support Assistant for [Company]..."_
 5. **Data Retention & Privacy**:
    Tickets in `handoffs` expire and are deleted after 90 days via `purge_expired_handoffs()`. No conversational transcripts are persisted in Postgres.
 
